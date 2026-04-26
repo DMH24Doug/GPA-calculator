@@ -148,6 +148,27 @@ function filterSubjects(subjects, selectedFilter) {
   return subjects;
 }
 
+function getCourseLevel(courseCode = "") {
+  const normalizedCode = String(courseCode).trim().toUpperCase();
+  const match = normalizedCode.match(/(\d{3})[A-Z]?$/);
+
+  if (!match) {
+    return "other";
+  }
+
+  return `${match[1][0]}00`;
+}
+
+function filterSubjectsByLevel(subjects, selectedLevel) {
+  if (selectedLevel === "all") {
+    return subjects;
+  }
+
+  return subjects.filter(
+    (subject) => getCourseLevel(subject.courseCode) === selectedLevel,
+  );
+}
+
 function Dashboard() {
   const [subjects, setSubjects, clearSubjects] = useLocalStorage(
     "gpa-subjects",
@@ -156,6 +177,7 @@ function Dashboard() {
   const initialLocalSubjectCountRef = useRef(subjects.length);
   const [theme, setTheme] = useLocalStorage("gpa-theme", "light");
   const [selectedFilter, setSelectedFilter] = useState("all");
+  const [selectedLevel, setSelectedLevel] = useState("all");
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
   const [confirmToast, setConfirmToast] = useState({
@@ -166,7 +188,10 @@ function Dashboard() {
 
   const result = calculateGPA(subjects);
   const subjectsWithStatus = mapSubjectsByStatus(result, subjects);
-  const visibleSubjects = filterSubjects(subjectsWithStatus, selectedFilter);
+  const visibleSubjects = filterSubjectsByLevel(
+    filterSubjects(subjectsWithStatus, selectedFilter),
+    selectedLevel,
+  );
 
   const counts = {
     all: subjectsWithStatus.length,
@@ -445,6 +470,8 @@ function Dashboard() {
                 subjects={visibleSubjects}
                 selectedFilter={selectedFilter}
                 onChangeFilter={setSelectedFilter}
+                selectedLevel={selectedLevel}
+                onChangeLevel={setSelectedLevel}
                 counts={counts}
                 onClearAll={() =>
                   openConfirmToast(
