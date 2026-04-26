@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import GPAResult from "../components/GPAResult";
 import ConfirmToast from "../components/ConfirmToast";
 import GradeTable from "../components/GradeTable";
@@ -6,7 +6,13 @@ import ImageScanner from "../components/ImageScanner";
 import SubjectForm from "../components/SubjectForm";
 import { sampleSubjects } from "../data/sampleSubjects";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-import { importSubjects as importSubjectsToApi } from "../services/subjectApi";
+import {
+  clearSubjects as clearSubjectsInApi,
+  createSubject as createSubjectInApi,
+  deleteSubject as deleteSubjectInApi,
+  getSubjects as getSubjectsFromApi,
+  importSubjects as importSubjectsToApi,
+} from "../services/subjectApi";
 import { calculateGPA } from "../utils/gpaCalculator";
 
 function IconButton({ label, onClick, children }) {
@@ -50,7 +56,17 @@ function CloseIcon() {
 
 function createSubjectRecord(subject) {
   return {
-    id: crypto.randomUUID(),
+    id: globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    courseCode: (subject.courseCode ?? "").trim().toUpperCase(),
+    courseName: (subject.courseName ?? "").trim(),
+    grade: (subject.grade ?? "").trim().toUpperCase(),
+  };
+}
+
+function createDatabaseSubjectRecord(subject) {
+  return {
+    id: `db-${subject.id}`,
+    dbId: subject.id,
     courseCode: (subject.courseCode ?? "").trim().toUpperCase(),
     courseName: (subject.courseName ?? "").trim(),
     grade: (subject.grade ?? "").trim().toUpperCase(),
@@ -77,6 +93,17 @@ function filterNewUniqueSubjects(existingSubjects, incomingSubjects) {
 
     return !alreadyExists && !alreadyIncludedEarlier;
   });
+}
+
+function mergeDatabaseSubjects(existingSubjects, databaseSubjects) {
+  const databaseRecords = databaseSubjects.map(createDatabaseSubjectRecord);
+  const localOnlySubjects = existingSubjects.filter((subject) => !subject.dbId);
+  const deduplicatedLocalSubjects = filterNewUniqueSubjects(
+    databaseRecords,
+    localOnlySubjects,
+  );
+
+  return [...deduplicatedLocalSubjects, ...databaseRecords];
 }
 
 function mapSubjectsByStatus(result, subjects) {
@@ -126,9 +153,11 @@ function Dashboard() {
     "gpa-subjects",
     [],
   );
+  const initialLocalSubjectCountRef = useRef(subjects.length);
   const [theme, setTheme] = useLocalStorage("gpa-theme", "light");
   const [selectedFilter, setSelectedFilter] = useState("all");
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [statusMessage, setStatusMessage] = useState(null);
   const [confirmToast, setConfirmToast] = useState({
     isOpen: false,
     message: "",
@@ -151,26 +180,80 @@ function Dashboard() {
     ).length,
   };
 
-  const handleAddSubject = (subject) => {
-    const nextSubject = createSubjectRecord(subject);
-
-    setSubjects((currentSubjects) => {
-      const uniqueSubjects = filterNewUniqueSubjects(currentSubjects, [
-        nextSubject,
-      ]);
-
-      if (uniqueSubjects.length === 0) {
-        return currentSubjects;
-      }
-
-      return [...uniqueSubjects, ...currentSubjects];
-    });
+  const showStatusMessage = (type, message) => {
+    setStatusMessage({ type, message });
   };
 
-  const handleRemoveSubject = (subjectId) => {
+  const syncSubjectsFromDatabase = async () => {
+    const apiSubjects = await getSubjectsFromApi();
     setSubjects((currentSubjects) =>
-      currentSubjects.filter((subject) => subject.id !== subjectId),
+      mergeDatabaseSubjects(currentSubjects, apiSubjects),
     );
+  };
+
+  const handleAddSubject = async (subject) => {
+    const nextSubject = createSubjectRecord(subject);
+
+    const uniqueSubjects = filterNewUniqueSubjects(subjects, [nextSubject]);
+
+    if (uniqueSubjects.length === 0) {
+      showStatusMessage("info", "That subject and grade is already in the list.");
+      return;
+    }
+
+    try {
+      await createSubjectInApi(nextSubject);
+      await syncSubjectsFromDatabase();
+      showStatusMessage("success", "Subject saved to the database.");
+    } catch {
+      setSubjects((currentSubjects) => [...uniqueSubjects, ...currentSubjects]);
+      showStatusMessage(
+        "warning",
+        "Backend unavailable, so this subject was saved only in your browser.",
+      );
+    }
+  };
+
+  const handleRemoveSubject = async (subject) => {
+    if (!subject.dbId) {
+      setSubjects((currentSubjects) =>
+        currentSubjects.filter((currentSubject) => currentSubject.id !== subject.id),
+      );
+      showStatusMessage("success", "Subject removed from the current list.");
+      return;
+    }
+
+    try {
+      await deleteSubjectInApi(subject.dbId);
+      await syncSubjectsFromDatabase();
+      showStatusMessage("success", "Subject removed.");
+    } catch {
+      showStatusMessage(
+        "error",
+        "Could not remove that subject from the database right now.",
+      );
+    }
+  };
+
+  const handleClearAllSubjects = async () => {
+    const hasDatabaseSubjects = subjects.some((subject) => subject.dbId);
+
+    if (!hasDatabaseSubjects) {
+      clearSubjects();
+      showStatusMessage("success", "Subject list cleared.");
+      return;
+    }
+
+    try {
+      await clearSubjectsInApi();
+      clearSubjects();
+      showStatusMessage("success", "All database subjects were cleared.");
+    } catch {
+      showStatusMessage(
+        "error",
+        "Could not clear subjects from the database right now.",
+      );
+    }
   };
 
   const closeConfirmToast = () => {
@@ -196,6 +279,10 @@ function Dashboard() {
 
   const handleLoadSampleData = () => {
     setSubjects(sampleSubjects);
+    showStatusMessage(
+      "info",
+      "Sample subjects loaded locally. They are not saved to the database until you add or import them there.",
+    );
   };
 
   const handleImportScannedSubjects = async (scannedSubjects) => {
@@ -205,19 +292,54 @@ function Dashboard() {
 
     try {
       await importSubjectsToApi(nextSubjects);
-
-      setSubjects((currentSubjects) => [
-        ...filterNewUniqueSubjects(currentSubjects, nextSubjects),
-        ...currentSubjects,
-      ]);
+      await syncSubjectsFromDatabase();
       setIsScannerOpen(false);
+      showStatusMessage("success", "Scanned subjects imported to the database.");
     } catch (error) {
       console.error("Failed to import scanned subjects to database:", error);
-      window.alert(
+      showStatusMessage(
+        "error",
         "Could not save scanned subjects to the database. Please check that the backend and MySQL are running.",
       );
     }
   };
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadInitialSubjects = async () => {
+      try {
+        const apiSubjects = await getSubjectsFromApi();
+
+        if (!isActive) {
+          return;
+        }
+
+        if (apiSubjects.length > 0 || initialLocalSubjectCountRef.current === 0) {
+          setSubjects((currentSubjects) =>
+            mergeDatabaseSubjects(currentSubjects, apiSubjects),
+          );
+        }
+
+        showStatusMessage("success", "Connected to the database.");
+      } catch {
+        if (!isActive) {
+          return;
+        }
+
+        showStatusMessage(
+          "warning",
+          "Backend not reachable. The app is using browser storage for now.",
+        );
+      }
+    };
+
+    loadInitialSubjects();
+
+    return () => {
+      isActive = false;
+    };
+  }, [setSubjects]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -228,12 +350,24 @@ function Dashboard() {
       return undefined;
     }
 
-    const timeoutId = window.setTimeout(() => {
+    const timeoutId = globalThis.setTimeout(() => {
       closeConfirmToast();
     }, 5000);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => globalThis.clearTimeout(timeoutId);
   }, [confirmToast.isOpen]);
+
+  useEffect(() => {
+    if (!statusMessage) {
+      return undefined;
+    }
+
+    const timeoutId = globalThis.setTimeout(() => {
+      setStatusMessage(null);
+    }, 4500);
+
+    return () => globalThis.clearTimeout(timeoutId);
+  }, [statusMessage]);
 
   return (
     <>
@@ -264,6 +398,22 @@ function Dashboard() {
                       Highest repeat only
                     </span>
                   </div>
+
+                  {statusMessage ? (
+                    <div
+                      className={`mt-3 border px-3 py-2 text-xs ${
+                        statusMessage.type === "error"
+                          ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200"
+                          : statusMessage.type === "warning"
+                            ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+                            : statusMessage.type === "success"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200"
+                              : "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-700/70 dark:text-slate-100"
+                      }`}
+                    >
+                      {statusMessage.message}
+                    </div>
+                  ) : null}
                 </div>
 
                 <IconButton
@@ -299,13 +449,13 @@ function Dashboard() {
                 onClearAll={() =>
                   openConfirmToast(
                     "Delete all subjects from this list?",
-                    clearSubjects,
+                    handleClearAllSubjects,
                   )
                 }
                 onRequestRemoveSubject={(subject) =>
                   openConfirmToast(
                     `Delete ${subject.courseCode || "this subject"} from the list?`,
-                    () => handleRemoveSubject(subject.id),
+                    () => handleRemoveSubject(subject),
                   )
                 }
               />

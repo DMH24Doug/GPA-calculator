@@ -1,4 +1,25 @@
-import { getSubjects, importSubjects } from "../services/subjectService.js";
+import {
+  clearSubjects,
+  createSubject,
+  deleteSubject,
+  getSubjects,
+  importSubjects,
+} from "../services/subjectService.js";
+
+export async function createSubjectController(request, response) {
+  try {
+    const subject = await createSubject(request.body ?? {});
+
+    return response.status(201).json({ subject });
+  } catch (error) {
+    const statusCode = error.message.includes("required") ? 400 : 500;
+
+    return response.status(statusCode).json({
+      message: "Failed to save subject.",
+      error: error.message,
+    });
+  }
+}
 
 export async function importSubjectsController(request, response) {
   const { subjects = [] } = request.body ?? {};
@@ -27,6 +48,39 @@ export async function getSubjectsController(_request, response) {
   } catch (error) {
     return response.status(500).json({
       message: "Failed to load subjects.",
+      error: error.message,
+    });
+  }
+}
+
+export async function deleteSubjectController(request, response) {
+  try {
+    const deleted = await deleteSubject(request.params.id);
+
+    if (!deleted) {
+      return response.status(404).json({
+        message: "Subject not found.",
+      });
+    }
+
+    return response.status(204).send();
+  } catch (error) {
+    const statusCode = error.message.includes("valid subject id") ? 400 : 500;
+
+    return response.status(statusCode).json({
+      message: "Failed to delete subject.",
+      error: error.message,
+    });
+  }
+}
+
+export async function clearSubjectsController(_request, response) {
+  try {
+    await clearSubjects();
+    return response.status(204).send();
+  } catch (error) {
+    return response.status(500).json({
+      message: "Failed to clear subjects.",
       error: error.message,
     });
   }
