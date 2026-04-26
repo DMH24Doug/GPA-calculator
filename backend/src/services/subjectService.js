@@ -48,6 +48,64 @@ export async function importSubjects(subjects = []) {
   };
 }
 
+export async function createSubject(subject = {}) {
+  const normalizedSubject = normalizeSubject(subject);
+
+  if (!isValidSubject(normalizedSubject)) {
+    throw new Error("A subject must include at least a course code and grade.");
+  }
+
+  const [result] = await dbPool.query(
+    `
+      INSERT INTO subjects (course_code, course_name, grade)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        course_name = VALUES(course_name),
+        id = LAST_INSERT_ID(id)
+    `,
+    [
+      normalizedSubject.courseCode,
+      normalizedSubject.courseName || normalizedSubject.courseCode,
+      normalizedSubject.grade,
+    ],
+  );
+
+  const [rows] = await dbPool.query(
+    `
+      SELECT
+        id,
+        course_code AS courseCode,
+        course_name AS courseName,
+        grade,
+        created_at AS createdAt
+      FROM subjects
+      WHERE id = ?
+      LIMIT 1
+    `,
+    [result.insertId],
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function deleteSubject(subjectId) {
+  const parsedId = Number(subjectId);
+
+  if (!Number.isInteger(parsedId) || parsedId <= 0) {
+    throw new Error("A valid subject id is required.");
+  }
+
+  const [result] = await dbPool.query("DELETE FROM subjects WHERE id = ?", [
+    parsedId,
+  ]);
+
+  return result.affectedRows > 0;
+}
+
+export async function clearSubjects() {
+  await dbPool.query("DELETE FROM subjects");
+}
+
 export async function getSubjects() {
   const [rows] = await dbPool.query(`
     SELECT
